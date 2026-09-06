@@ -41,7 +41,7 @@ Customer-level features were built entirely via SQL (PostgreSQL) using CTEs, inc
 
 ## Modeling
 
-- Baseline: Logistic Regression
+
 - Primary model: XGBoost (`binary:logistic`, evaluated on PR-AUC given class imbalance)
 - Hyperparameter exploration: manual sweeps (`n_estimators`, `gamma`) to build intuition before `RandomizedSearchCV`, chosen over `GridSearchCV` for better coverage of the parameter space at lower computational cost
 - Diagnosed and corrected an overfitting pattern via train/test accuracy curves across `n_estimators`
