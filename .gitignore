@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+.venv/
+venv/
+
+# Large raw/intermediate datasets
+zomato.csv
+cleaned_restuarants.csv
+
+# Intermediate/duplicate datasets
+customer_churn_feature.csv
+customers_with_churn_label.csv
+customers_with_churn_label(1).csv
+customers_with_churn_label(3).csv
+order_simulation.csv
+
+# Old / duplicate notebooks
+EDA.ipynb
+Preprocessing and Model training.ipynb
+Untitled.ipynb
+cleaned.ipynb
+customer_simulation.ipynb
+order_simulation.ipynb
