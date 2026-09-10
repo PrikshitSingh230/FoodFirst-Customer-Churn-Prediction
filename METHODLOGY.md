@@ -365,7 +365,7 @@ This pattern holds at the population level too, not just within this one quintil
 
 ![Order trajectory by churn status](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/order_trajectory.png)
 
-![Churn by price tier](https://github.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/blob/main/Images/churn_retained_by_mean_order_gap.png)
+![mean_order_gap box plot by churn status](https://github.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/blob/main/Images/churn_retained_by_mean_order_gap.png)
 
 Practically, this means `mean_order_gap` on its own is a misleading feature. A trend-based feature, something like the ratio of `orders_last_30d` to `orders_first_30d`, or a slope across the three 30-day buckets, would capture the actual decline pattern that the flat average currently hides. Those raw ingredients (`orders_first_30d`, `orders_middle_30d`, `orders_last_30d`) already exist in the feature table; the trend feature itself just hasn't been built yet.
 
