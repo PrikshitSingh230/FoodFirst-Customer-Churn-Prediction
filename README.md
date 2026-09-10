@@ -116,7 +116,7 @@ Hyperparameter tuning caught 69 more real churners (975 vs. 906) at the cost of 
 
 ### 5. Luxury-tier customers show noticeably lower churn (worth confirming before treating as a finding)
 
-<!-- PASTE IMAGE LINK HERE: cropped price-tier panel from churn_categorical.png -->
+![Churn by price tier](https://github.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/blob/main/Images/churn_retention_by_price_tier.png)
 
 Customers whose preferred price tier is Luxury retain at roughly 75%, well above Budget, Mid-range, and Premium, which all sit around 58-61%. This is a real gap in the data, but price tier was assigned as part of persona generation alongside other traits, so this may partly reflect how personas were designed rather than an emergent pattern. Worth treating as a lead to investigate further, not a confirmed insight.
 
