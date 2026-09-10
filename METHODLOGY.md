@@ -1,762 +1,442 @@
-# FoodFirst Customer Churn Prediction — Methodology
+# FoodFirst Customer Churn Prediction, Methodology
 
-This document describes the reasoning, assumptions, mathematical choices, and modeling decisions behind the FoodFirst customer churn prediction project.
+Back to [README](./README.md)
 
-The main objective was not simply to train a classifier, but to construct a plausible customer-behavior environment and understand how assumptions made during data generation affect the eventual churn model.
+This document covers the reasoning, assumptions, math, and modeling decisions behind the project. The goal was never just to train a classifier. It was to build a plausible customer-behavior environment and understand how the assumptions made during data generation shape what the eventual model learns.
+
+<details>
+<summary>Table of Contents</summary>
+
+1. [Problem Formulation](#1-problem-formulation)
+2. [Why Synthetic Data?](#2-why-synthetic-data)
+3. [Restaurant Data Preparation](#3-restaurant-data-preparation)
+4. [Restaurant Rating](#4-restaurant-rating)
+5. [Bayesian Rating Adjustment](#5-bayesian-rating-adjustment)
+6. [Review Volume Transformation](#6-review-volume-transformation)
+7. [Why Appeal Score Instead of Popularity?](#7-why-appeal-score-instead-of-popularity)
+8. [Appeal Score](#8-appeal-score)
+9. [Synthetic Customer Generation](#9-synthetic-customer-generation)
+10. [Poisson Distribution for Order Frequency](#10-poisson-distribution-for-order-frequency)
+11. [Gamma Distribution for Spending](#11-gamma-distribution-for-spending)
+12. [Customer Preferences](#12-customer-preferences)
+13. [Order Simulation](#13-order-simulation)
+14. [Churn Generation](#14-churn-generation)
+15. [Revised Time-Based Churn](#15-revised-time-based-churn)
+16. [Temporal Feature Engineering](#16-temporal-feature-engineering)
+17. [SQL Feature Engineering](#17-sql-feature-engineering)
+18. [Modeling](#18-modeling)
+19. [Hyperparameter Tuning](#19-hyperparameter-tuning)
+20. [Evaluation](#20-evaluation)
+21. [Why SHAP?](#21-why-shap)
+22. [Key Analytical Findings](#22-key-analytical-findings)
+23. [Why mean_order_gap Looked Backwards](#23-why-mean_order_gap-looked-backwards)
+24. [Synthetic Data: The Central Limitation](#24-synthetic-data-the-central-limitation)
+25. [Avoiding the Simulation Trap](#25-avoiding-the-simulation-trap)
+26. [Production Extension](#26-production-extension)
+27. [Reproducibility](#27-reproducibility)
+28. [Summary of Key Decisions](#28-summary-of-key-decisions)
+29. [Final Perspective](#29-final-perspective)
+
+</details>
 
 ---
 
 # 1. Problem Formulation
 
-The problem is framed as a **binary customer churn prediction task**.
-
-For each customer, the model receives behavioral information observed during an initial period and predicts whether the customer will churn during a subsequent period.
-
-### Prediction framework
+The problem is framed as a binary customer churn prediction task. For each customer, the model receives behavioral information observed during an initial period and predicts whether the customer will churn during a subsequent period.
 
 ```text
                     OBSERVATION                 OUTCOME
                     PERIOD                      PERIOD
 
-                 Days 0–90                    Days 91–180
-                     │                            │
-                     │                            │
+                 Days 0-90                    Days 91-180
+                     |                            |
              Customer behavior              Future activity
-                     │                            │
-                     ▼                            ▼
+                     |                            |
+                     v                            v
              Feature engineering              Churn label
-                     │                            │
-                     └───────────┬────────────────┘
-                                 │
-                                 ▼
-                         Churn Prediction
+                     |                            |
+                     +------------+---------------+
+                                  |
+                                  v
+                          Churn Prediction
 ```
 
-The key constraint is:
-
-> **No information from the outcome period should be available to the model when creating prediction features.**
-
-This prevents future information from leaking into the prediction problem.
+The key constraint: no information from the outcome period should be available to the model when creating prediction features. This prevents future information from leaking into the prediction problem.
 
 ---
 
 # 2. Why Synthetic Data?
 
-The project required customer-level food-delivery behavior, but the available restaurant dataset did not contain the customer/order history needed to construct a churn problem.
+The project required customer-level food delivery behavior, but the available restaurant dataset had no customer or order history to build a churn problem on top of.
 
-Rather than switching to a generic churn dataset, I decided to build the missing customer layer myself.
-
-This introduced a different challenge:
-
-> **If the customer data does not exist, what assumptions are required to create believable customer behavior?**
-
-The synthetic environment was therefore designed around several components:
+Rather than switching to a generic churn dataset, I built the missing customer layer myself, which raised a different question: if the customer data doesn't exist, what assumptions are required to create believable customer behavior?
 
 ```text
 Restaurant Data
-      │
-      ▼
+      |
 Restaurant Characteristics
-      │
-      ▼
+      |
 Customer Profiles
-      │
-      ├── Ordering Frequency
-      ├── Spending Behavior
-      ├── Cuisine Preferences
-      └── Price Preferences
-      │
-      ▼
+      |
+      +-- Ordering Frequency
+      +-- Spending Behavior
+      +-- Cuisine Preferences
+      +-- Price Preferences
+      |
 Restaurant Selection
-      │
-      ▼
+      |
 Orders
-      │
-      ▼
+      |
 Future Activity
-      │
-      ▼
+      |
 Churn
 ```
 
-The synthetic dataset is not intended to reproduce real customer behavior perfectly.
-
-Instead, it provides a controlled environment in which assumptions can be explicitly defined, tested, and modified.
+The synthetic dataset isn't meant to reproduce real customer behavior exactly. It's a controlled environment where assumptions can be explicitly defined, tested, and changed.
 
 ---
 
 # 3. Restaurant Data Preparation
 
-The restaurant dataset forms the foundation of the simulation.
+The restaurant dataset is the foundation of the simulation. Relevant attributes include restaurant rating, review/vote volume, cost, cuisine, restaurant type, and location-related fields. These were cleaned and transformed into features that influence customer preferences and restaurant selection before any customer simulation happened.
 
-Relevant restaurant attributes include:
-
-* Restaurant rating
-* Review/vote volume
-* Cost information
-* Cuisine
-* Restaurant type
-* Location-related attributes
-
-Before using these attributes in customer simulation, they were cleaned and transformed into features that could influence customer preferences and restaurant selection.
-
+Source: [Zomato Restaurants Dataset, Kaggle](https://www.kaggle.com/datasets/rajeshrampure/zomato-dataset)
 ---
 
 # 4. Restaurant Rating
 
-## 4.1 Problem with raw ratings
-
-A raw restaurant rating does not capture the amount of evidence behind the rating.
-
-For example:
+A raw restaurant rating doesn't capture how much evidence sits behind it. For example:
 
 ```text
-Restaurant A
-Rating = 5.0
-Reviews = 5
-
-Restaurant B
-Rating = 4.6
-Reviews = 5,000
+Restaurant A: Rating 5.0, Reviews 5
+Restaurant B: Rating 4.6, Reviews 5,000
 ```
 
-Treating these ratings equally assumes that five reviews provide the same confidence as thousands of reviews.
-
-I therefore decided not to use the raw rating directly.
+Treating these ratings the same assumes five reviews carry the same confidence as five thousand. I didn't want to use the raw rating directly for that reason.
 
 ---
 
 # 5. Bayesian Rating Adjustment
 
-The restaurant rating was adjusted using a Bayesian-style approach that combines the restaurant's observed rating with the overall dataset average.
-
-The general form is:
+The restaurant rating was adjusted using a Bayesian-style approach combining the restaurant's observed rating with the overall dataset average:
 
 $$
-AdjustedRating =
-\frac{v}{v+m}R+
-\frac{m}{v+m}C
+AdjustedRating = \frac{v}{v+m}R + \frac{m}{v+m}C
 $$
 
-where:
+where R is the restaurant's observed rating, v is its number of votes, C is the overall average rating, and m is a minimum-review threshold that controls how strongly low-evidence ratings get pulled toward the average.
 
-* \(R\) = restaurant's observed rating
-* \(v\) = number of votes/reviews
-* \(C\) = overall average rating
-* \(m\) = minimum review threshold / prior-strength parameter
+With few reviews, the rating is pulled toward the overall average. With many reviews, the observed rating dominates. This is meant to reflect that restaurant quality depends on both the rating itself and how much evidence backs it.
 
-The effect is intuitive:
+![Popularity score vs raw rating](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/popularity_score_rate.png)
 
-### Few reviews
-
-The restaurant's rating is pulled toward the overall average.
-
-### Many reviews
-
-The observed restaurant rating has greater influence.
-
-This was chosen because restaurant quality should depend on both **rating and confidence in that rating**.
+The scatter shows this in practice. At low ratings, points sit tightly along a line, since most low-rated restaurants also have few reviews and little room for adjustment. At high ratings (4.0 and above), the spread widens noticeably: restaurants with the same raw rating end up with meaningfully different popularity scores depending on how many votes back that rating.
 
 ---
 
 # 6. Review Volume Transformation
 
-Review counts were highly right-skewed.
-
-A small number of restaurants had extremely large numbers of reviews compared with the majority.
-
-Using raw review counts would allow these extreme values to dominate a scoring function.
-
-I therefore used:
+Review counts were heavily right-skewed. A small number of restaurants had extremely large numbers of reviews compared to the rest, and using raw counts would let those extreme values dominate any scoring function built on top of them.
 
 $$
 log(1+votes)
 $$
 
-The `+1` ensures that restaurants with zero votes can still be transformed.
-
-The transformation compresses large values while preserving the relative ordering of review volume.
-
-The purpose was not to remove information from review volume, but to reduce the disproportionate influence of extreme values.
+The `+1` lets restaurants with zero votes still pass through the transform. This compresses large values while preserving the relative ordering of review volume. The goal wasn't to remove information from review volume, just to stop a handful of extreme values from dominating everything downstream.
 
 ---
 
 # 7. Why Appeal Score Instead of Popularity?
 
-A simple restaurant-selection mechanism could have used overall restaurant popularity.
-
-However, popularity is a **global property**.
-
-It answers:
-
-> "How often is this restaurant selected overall?"
-
-It does not answer:
-
-> "How attractive is this restaurant to this particular customer?"
-
-A customer who prefers inexpensive Indian food should not necessarily have the same restaurant-selection probabilities as a customer who prefers expensive Japanese food.
-
-I therefore introduced a **customer-specific Appeal Score**.
+A simpler restaurant-selection mechanism could have used overall popularity. But popularity is a global property: it answers "how often is this restaurant chosen overall," not "how attractive is this restaurant to this particular customer." A customer who prefers inexpensive Indian food shouldn't have the same restaurant-selection probabilities as one who prefers expensive Japanese food. That gap is why I introduced a customer-specific Appeal Score instead.
 
 ---
 
 # 8. Appeal Score
 
-The Appeal Score combines restaurant characteristics with the preferences of an individual customer.
-
-Conceptually:
+The Appeal Score combines restaurant characteristics with an individual customer's preferences:
 
 $$
-Appeal(c,r)
-=
-w_1CuisineMatch
-+
-w_2PriceMatch
-+
-w_3Rating
-+
-w_4OtherFactors
+Appeal(c,r) = w_1 \cdot CuisineMatch + w_2 \cdot PriceMatch + w_3 \cdot Rating + w_4 \cdot OtherFactors
 $$
 
-where:
-
-* \(c\) = customer
-* \(r\) = restaurant
-* \(w_i\) = component weights
-
-The exact implementation and weights are defined in the customer/order simulation notebook.
-
-The score is then converted into probabilities used to determine restaurant selection.
-
-### Why this approach?
-
-It creates **heterogeneous customer behavior**.
-
-Instead of:
+where c is the customer, r is the restaurant, and the w terms are component weights defined in the customer/order simulation notebook. The resulting score is converted into probabilities used for restaurant selection.
 
 ```text
-Restaurant popularity
-        ↓
-Same ordering probability for everyone
+Restaurant popularity  ->  same ordering probability for everyone
+
+Customer preferences + Restaurant characteristics
+        -> Customer-specific Appeal
+        -> Restaurant choice
 ```
 
-the simulation becomes:
+This is what makes restaurant diversity, loyalty, cuisine preference, and price sensitivity meaningful as downstream features, instead of every customer converging on the same popular restaurants.
 
-```text
-Customer preferences
-        +
-Restaurant characteristics
-        ↓
-Customer-specific Appeal
-        ↓
-Restaurant choice
-```
+![Appeal score distribution vs popularity score distribution](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/popularity_score_vs_appeal_score.png)
 
-This makes restaurant diversity, loyalty, cuisine preference, and price sensitivity meaningful downstream features.
+This is the clearest evidence that the two scores aren't measuring the same thing. Popularity score is tightly concentrated around 0.2 to 0.3 for almost every restaurant. Appeal score is wider and flatter, spreading meaningfully from 0.4 up past 0.8. If appeal score were just a rescaled version of popularity, the two histograms would have the same shape. They don't.
+
+![Appeal score vs rating](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/appeal_score_rating.png)
+
+One thing worth flagging honestly: there's a visible floor in this scatter, a cluster of restaurants sitting at roughly 0.34 appeal score across a range of ratings from about 3.3 to 4.3. That's most likely a minimum-value clip somewhere in the appeal score formula rather than a real behavioral pattern, and it's worth checking against the simulation notebook rather than reading into it further.
 
 ---
 
 # 9. Synthetic Customer Generation
 
-Customers were generated with different behavioral characteristics rather than treating every customer identically.
-
-The simulation introduces variation in:
-
-* Ordering frequency
-* Spending behavior
-* Cuisine preference
-* Price preference
-* Restaurant preference
-* Exploration/loyalty behavior
-
-The objective was to create a population containing different types of customers rather than a collection of independent random observations.
+Customers were generated with different behavioral characteristics rather than treating every customer identically. The simulation introduces variation in ordering frequency, spending behavior, cuisine preference, price preference, restaurant preference, and exploration/loyalty tendency. The goal was a population with genuinely different types of customers, not a set of independent random draws that happen to look different.
 
 ---
 
 # 10. Poisson Distribution for Order Frequency
 
-The number of orders placed by a customer during a fixed time period is a count variable.
-
-I therefore used a Poisson-based approach:
+The number of orders a customer places in a fixed period is a count variable, so I used a Poisson-based approach:
 
 $$
 N \sim Poisson(\lambda)
 $$
 
-where:
-
-* \(N\) = number of orders
-* \(\lambda\) = expected order rate
-
-Different customer profiles can be assigned different values of \(\lambda\).
-
-For example:
-
-```text
-Low-frequency customer
-λ → lower
-
-Medium-frequency customer
-λ → moderate
-
-High-frequency customer
-λ → higher
-```
-
-This produces variation in ordering frequency while maintaining a realistic non-negative count structure.
-
-### Why not simply generate random order counts?
-
-Because the objective was to model **event frequency**, not just generate arbitrary integers.
+where N is the number of orders and lambda is the expected order rate. Different customer profiles get different values of lambda, from lower for infrequent customers to higher for frequent ones. This keeps order counts non-negative and realistic while still producing meaningful variation across the population. A plain random integer generator wouldn't have modeled event frequency the same way.
 
 ---
 
 # 11. Gamma Distribution for Spending
 
-Spending-related variables were modeled using a Gamma distribution:
+Spending-related variables were modeled with a Gamma distribution:
 
 $$
 Spend \sim Gamma(k,\theta)
 $$
 
-where:
-
-* \(k\) = shape parameter
-* \(\theta\) = scale parameter
-
-Gamma was selected because spending:
-
-* cannot be negative
-* is continuous
-* is typically right-skewed
-* can contain a smaller number of high-spending customers
-
-A normal distribution would allow negative values and would not naturally reproduce the desired skew.
-
-The parameters were chosen based on the intended customer behavior and the implementation in the simulation notebook.
+Gamma was chosen because spending can't be negative, is continuous, and is typically right-skewed with a small number of high spenders. A normal distribution would allow negative values and wouldn't reproduce that skew naturally. Parameters were set based on the intended customer behavior and are documented in the simulation notebook.
 
 ---
 
 # 12. Customer Preferences
 
-Customers were not given identical preferences.
-
-Preference variables influence the probability that a customer interacts with a particular restaurant or cuisine.
-
-Examples include:
-
-```text
-Customer
-│
-├── Preferred cuisines
-├── Preferred price range
-├── Ordering intensity
-├── Spending tendency
-└── Exploration / loyalty tendency
-```
-
-This creates a relationship between the customer's latent preferences and their observed orders.
+Customers weren't given identical preferences. Preference variables (preferred cuisines, price range, ordering intensity, spending tendency, exploration vs. loyalty) shape the probability that a customer interacts with a given restaurant or cuisine, which ties a customer's latent preferences to their observed orders.
 
 ---
 
 # 13. Order Simulation
 
-Orders are generated by combining customer behavior with restaurant characteristics.
-
-At a high level:
+Orders combine customer behavior with restaurant characteristics:
 
 ```text
-Customer
-    │
-    ├── Order frequency
-    ├── Spending tendency
-    └── Preferences
-             │
-             ▼
-       Appeal Scores
-             │
-             ▼
-     Restaurant selection
-             │
-             ▼
-          Order
+Customer (order frequency, spending tendency, preferences)
+        -> Appeal Scores
+        -> Restaurant selection
+        -> Order
 ```
 
-Each simulated order therefore contains information about both sides of the interaction:
-
-**Customer ↔ Restaurant**
-
-This allows downstream features to capture not just how often customers order, but **what they order and how their preferences evolve**.
+Each simulated order carries information about both sides of the interaction, customer and restaurant, which lets downstream features capture not just how often customers order but what they order and how their preferences shift over time.
 
 ---
 
 # 14. Churn Generation
 
-## Initial approach
-
-The first version of the simulation considered churn around customer ordering events.
-
-This created an unintended problem.
-
-Customers who ordered frequently had more opportunities to trigger the churn mechanism than customers who ordered infrequently.
-
-This meant the mechanics of the label-generation process could itself introduce a relationship between frequency and churn.
+The first version of the simulation checked churn around customer ordering events. This created an unintended problem: customers who ordered frequently had more opportunities to trigger the churn mechanism than infrequent customers did. That meant the mechanics of the label-generation process could introduce a relationship between frequency and churn on their own, independent of any real behavioral signal.
 
 ---
 
 # 15. Revised Time-Based Churn
 
-I changed the mechanism to make churn a **time-based outcome** rather than something evaluated only when an order occurs.
-
-The final structure is:
+I changed the mechanism to make churn a time-based outcome instead of something evaluated only when an order happens:
 
 ```text
-Days 0–90
-Customer observation
-       │
-       ▼
-Feature generation
-       │
-       ▼
-Churn prediction
-       │
-       ▼
-Days 91–180
-Future customer behavior
-       │
-       ▼
-Churn outcome
+Days 0-90: observation, feature generation, churn prediction
+Days 91-180: future behavior, churn outcome
 ```
 
-This creates a cleaner prediction problem:
-
-> **What can we learn about future churn from behavior observed before the prediction point?**
-
-This change was particularly important because it prevented order frequency from influencing churn simply through the number of opportunities available to trigger the label.
+This gives a cleaner question to answer: what can we learn about future churn from behavior observed before the prediction point? It also stops order frequency from influencing churn simply because frequent customers get more chances to trigger the label.
 
 ---
 
 # 16. Temporal Feature Engineering
 
-Customer features were calculated using only the observation period.
-
-Examples include:
-
-### Recency
-
-$$
-Recency =
-PredictionDate - LastOrderDate
-$$
-
-### Frequency
-
-Number of orders within specified historical windows.
-
-### Monetary behavior
-
-Spending during historical windows.
-
-### Order-gap behavior
-
-Average or characteristic time between orders.
-
-### Restaurant behavior
-
-* Restaurant diversity
-* Restaurant loyalty
-* Repeat ordering
-
-### Cuisine behavior
-
-* Cuisine diversity
-* Cuisine loyalty
-* Preference concentration
-
-### Price behavior
-
-Comparison between customer spending and restaurant price characteristics.
-
-The purpose was to represent **customer behavior**, rather than simply customer identity.
+All customer features were calculated using only the observation period. This included recency (days between the prediction date and the last order), frequency (orders in historical windows), monetary behavior (spending in historical windows), order-gap behavior (average or characteristic time between orders), restaurant behavior (diversity, loyalty, repeat ordering), cuisine behavior (diversity, loyalty, preference concentration), and price behavior (spending relative to restaurant price level). The goal was to represent behavior, not just identity.
 
 ---
 
 # 17. SQL Feature Engineering
 
-Customer-level behavioral features were aggregated using SQL/PostgreSQL.
-
-This was intentionally separated from the machine learning stage.
-
-The process was:
+Customer-level features were aggregated using SQL/PostgreSQL, intentionally kept separate from the modeling stage:
 
 ```text
-Raw Orders
-    ↓
-SQL Aggregation
-    ↓
-Customer-level Feature Table
-    ↓
-EDA
-    ↓
-Modeling
+Raw Orders -> SQL Aggregation -> Customer-level Feature Table -> EDA -> Modeling
 ```
 
-This mirrors a common analytics workflow where raw transactional data is transformed into an analytical dataset before modeling.
+This mirrors a common analytics workflow where raw transactional data becomes an analytical dataset before it ever reaches a model.
 
 ---
 
 # 18. Modeling
 
-The final predictive model uses **XGBoost**.
+The final predictive model uses XGBoost, chosen because the dataset has nonlinear relationships, mixed feature scales, and behavioral interactions, particularly between recency, frequency, spending, and churn, that a tree-based boosting model can capture without every relationship being specified by hand.
 
-XGBoost was selected because the resulting dataset contains:
-
-* nonlinear relationships
-* mixed feature scales
-* behavioral interactions
-* potentially complex relationships between recency, frequency, spending, and churn
-
-A tree-based boosting model can capture these interactions without requiring every relationship to be explicitly specified.
-
-The modeling workflow included:
-
-1. Feature preparation
-2. Train/test split
-3. Baseline model
-4. Hyperparameter search
-5. Final model
-6. Evaluation
-7. SHAP interpretation
+Workflow: feature preparation, train/test split, baseline model, hyperparameter search, final model, evaluation, SHAP interpretation.
 
 ---
 
 # 19. Hyperparameter Tuning
 
-Hyperparameter tuning was performed in two stages:
-
 ```text
-Baseline
-   ↓
-Randomized Search
-   ↓
-Promising Parameter Region
-   ↓
-Grid Search
-   ↓
-Final Configuration
+Baseline -> Randomized Search -> Promising Parameter Region -> Grid Search -> Final Configuration
 ```
 
-The purpose was to first explore the parameter space efficiently and then perform a more focused search around promising configurations.
-
-The final parameters are documented in the model-training notebook.
+The idea was to explore the parameter space broadly first, then focus a grid search around the region that looked promising. Final parameters are documented in the model-training notebook.
 
 ---
 
 # 20. Evaluation
 
-Multiple metrics were considered because churn prediction is not adequately described by accuracy alone.
+Multiple metrics were used since churn prediction isn't well described by accuracy alone.
 
-The final model achieved:
+| Metric | Result |
+|---|---:|
+| ROC-AUC | 93.20% |
+| Accuracy | 87.19% |
+| Precision | 84.27% |
+| Recall | 84.86% |
+| F1 | 84.56% |
 
-| Metric    |     Result |
-| --------- | ---------: |
-| ROC-AUC   | **93.20%** |
-| Accuracy  | **87.19%** |
-| Precision | **84.27%** |
-| Recall    | **84.86%** |
-| F1        | **84.56%** |
+![ROC Curve](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/ROC_AUC%20graph.png)
 
-These results represent performance on the simulated dataset.
+**Baseline vs. tuned model**
 
-They should not be interpreted as expected production performance because both the customer behavior and churn outcomes were generated synthetically.
+<table>
+<tr>
+<td><img src="https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/confusion_matrix_baseline_model.png" alt="Baseline confusion matrix" width="400"/></td>
+<td><img src="https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/confusionmatrix.png" alt="Tuned confusion matrix" width="400"/></td>
+</tr>
+</table>
+
+Comparing the two directly:
+
+| | Baseline | Tuned |
+|---|---:|---:|
+| False positives | 119 | 182 |
+| False negatives | 243 | 174 |
+| Churners caught | 906 | 975 |
+
+Tuning moved the model toward catching more real churners at the cost of more false alarms. That's a deliberate trade, not just an optimization artifact: in this problem a missed churner is a lost customer, while a false alarm is an unnecessary retention offer, so shifting error toward false positives is usually the right call.
+
+These results reflect performance on the simulated dataset and shouldn't be read as expected production performance, since both customer behavior and churn outcomes were generated synthetically.
 
 ---
 
 # 21. Why SHAP?
 
-A churn model is useful only if its predictions can be interpreted well enough to support decisions.
+A churn model is only useful if its predictions can be understood well enough to act on. SHAP was used to answer which features influence predictions most, which push churn probability up or down, and why a specific customer gets flagged as high risk. That turns the question from "who will churn" into "who will churn, and what behavior is driving it."
 
-SHAP was used to investigate:
+![SHAP summary plot](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/SHAP_value_output.png)
 
-* Which features influence predictions most?
-* Which features increase churn probability?
-* Which features decrease churn probability?
-* Why is an individual customer classified as high risk?
+![SHAP feature importance bar chart](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/shap_barplot.png)
 
-This changes the analysis from:
+`recency_days` dominates both plots. In the beeswarm, high recency (red, meaning a long time since the last order) pushes SHAP values sharply positive, toward churn. The bar chart shows the same thing more bluntly: recency's mean absolute SHAP value is roughly five times the next feature, `mean_order_gap`.
 
-> "Who will churn?"
-
-to:
-
-> "Who will churn, and what behavior is driving that prediction?"
+Two features appear here, `age` and `income`, that aren't described anywhere in the feature engineering sections above. They came from customer profile generation rather than the SQL aggregation step, and are noted here for completeness since a plot listing undocumented features is a fair thing for a reader to notice.
 
 ---
 
 # 22. Key Analytical Findings
 
-The analysis highlighted several behavioral patterns.
-
-### Recent activity
-
-Recent customer activity was strongly associated with churn risk.
-
-### Historical spending
-
-Historical spending alone was not sufficient to identify customers who would remain active.
-
-### Behavioral features
-
-Recency, frequency, and ordering behavior provided more useful signals than relying purely on static customer attributes.
-
-### Simulation assumptions matter
-
-The churn-generation issue demonstrated that a model can learn patterns created by the **data-generation process itself**.
-
-This was one of the main lessons of the project.
+Recent activity was strongly associated with churn risk. Historical spending alone wasn't enough to identify who would stay active. Recency, frequency, and ordering behavior gave more useful signal than static customer attributes. And the churn-generation issue in Section 14 showed that a model can learn patterns created by the data-generation process itself, which was one of the more important lessons of the project.
 
 ---
 
-# 23. Synthetic Data: The Central Limitation
+# 23. Why mean_order_gap Looked Backwards
 
-The most important limitation is that the customer-level data is simulated.
+One feature didn't behave the way intuition suggested it should. `mean_order_gap`, the average number of days between a customer's orders, was *smaller* for churned customers (median around 5 days) than for retained customers (median around 10 days). That's backwards from the usual assumption that churn means declining activity and growing gaps between orders.
 
-The project therefore has a controlled relationship between:
+The first hypothesis was that this came from the churn-hazard-compounding issue described in Section 14 and 15, frequent orderers accumulating more chances to trigger churn even after the mechanism was made time-based. Checking that directly against the feature table didn't support it: customers with more total orders in the observation window actually had a slightly *lower* churn rate overall (34% in the top order-frequency quintile vs. 53% in the bottom quintile), which is the opposite of what a compounding-hazard artifact would produce.
+
+The real explanation showed up once the observation window was split into thirds. Looking only at the customers with the smallest average gaps (the group that should, by the old intuition, be the safest):
+
+| | Days 0-30 | Days 31-60 | Days 61-90 | Recency |
+|---|---:|---:|---:|---:|
+| Retained | 15.3 orders | 15.7 orders | 15.8 orders | 1.9 days |
+| Churned | 12.5 orders | 5.2 orders | 1.6 orders | 58.0 days |
+
+Both groups have a small average gap, but for opposite reasons. The retained customers here are consistently active across the entire window. The churned customers front-loaded their activity, ordered heavily in the first 30 days, and then dropped off almost completely, going 58 days without an order by the end of the window. `mean_order_gap` averages over the whole 90 days, so it can't tell a steadily active customer from one who burned through a cluster of orders early and then vanished. Both produce a similarly small number.
+
+This pattern holds at the population level too, not just within this one quintile:
+
+![Order trajectory by churn status](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/order_trajectory.png)
+
+<!-- PASTE IMAGE LINK HERE: cropped mean_order_gap panel from churn_numerical.png, bottom-right box plot -->
+
+Practically, this means `mean_order_gap` on its own is a misleading feature. A trend-based feature, something like the ratio of `orders_last_30d` to `orders_first_30d`, or a slope across the three 30-day buckets, would capture the actual decline pattern that the flat average currently hides. Those raw ingredients (`orders_first_30d`, `orders_middle_30d`, `orders_last_30d`) already exist in the feature table; the trend feature itself just hasn't been built yet.
+
+---
+
+# 24. Synthetic Data: The Central Limitation
+
+The most important limitation is that the customer-level data is simulated:
 
 ```text
-Assumptions
-    ↓
-Synthetic behavior
-    ↓
-Synthetic churn
-    ↓
-Model
+Assumptions -> Synthetic behavior -> Synthetic churn -> Model
 ```
 
-The model can successfully recover patterns that exist in this simulated environment.
-
-However, this does not guarantee that the same relationships exist in real food-delivery data.
-
-For example, a high-performing model on this dataset does not prove that:
-
-> "Recency will produce 93% ROC-AUC on a real food-delivery platform."
-
-It demonstrates that the modeling pipeline can identify patterns generated by the simulation.
+The model can recover patterns that exist inside this simulated environment, but that doesn't guarantee the same relationships hold in real food-delivery data. A high AUC here doesn't prove that recency would produce a 93% ROC-AUC on a real platform. It shows the pipeline can find patterns that were generated by the simulation.
 
 ---
 
-# 24. Avoiding the Simulation Trap
+# 25. Avoiding the Simulation Trap
 
-Because the data is synthetic, model performance should not be the only measure of project quality.
-
-The more important questions are:
-
-1. Were the assumptions reasonable?
-2. Were unintended relationships identified?
-3. Was future information prevented from entering the features?
-4. Were distributions appropriate for the variables being simulated?
-5. Was customer heterogeneity introduced?
-6. Can the model's learned relationships be explained?
-7. Can the workflow be adapted to real customer data?
-
-This is why the project places significant emphasis on **data generation and validation before modeling**.
+Since the data is synthetic, model performance shouldn't be the only measure of project quality. More useful questions: were the assumptions reasonable, were unintended relationships caught, was future information kept out of the features, were the distributions appropriate for what they were modeling, was customer heterogeneity actually introduced, can the model's learned relationships be explained, and can the workflow be adapted to real customer data. That's why this project puts real weight on data generation and validation before modeling, rather than treating the model as the whole story.
 
 ---
 
-# 25. Production Extension
+# 26. Production Extension
 
-If real customer-level data were available, I would change several parts of the workflow.
-
-### Validation
-
-Use time-based validation rather than relying only on random splits.
-
-### Calibration
-
-Check whether predicted churn probabilities correspond to observed churn rates.
-
-### Threshold selection
-
-Choose the intervention threshold using business costs rather than simply maximizing F1 or accuracy.
-
-### Retention economics
-
-Estimate:
+With real customer-level data, several parts of the workflow would change. Validation would move to time-based splits instead of random ones. Predicted probabilities would need calibration checks against observed churn rates. The intervention threshold would be set by business cost, not by maximizing F1 or accuracy. Retention prioritization would use something like:
 
 $$
-ExpectedValue =
-P(Retention)\times CustomerValue
--
-InterventionCost
+ExpectedValue = P(Retention) \times CustomerValue - InterventionCost
 $$
 
-and use this to prioritize customers.
-
-### Experimentation
-
-A churn model predicts risk.
-
-It does **not** prove that an intervention will prevent churn.
-
-Retention strategies should therefore be tested through controlled experiments such as A/B testing.
+And critically, a churn model predicts risk, it doesn't prove an intervention prevents churn. Retention strategies would need to be tested through controlled experiments, not assumed to work because the model flagged the right customers.
 
 ---
 
-# 26. Reproducibility
-
-The project is organized into sequential notebooks covering:
+# 27. Reproducibility
 
 ```text
 01_cleaned.ipynb
-        ↓
-02_restaurants_eda.ipynb
-        ↓
-03_restaurants_feature_engineering.ipynb
-        ↓
-04_Synthetic_Customer_Generation.ipynb
-        ↓
-05_order_simulation.ipynb
-        ↓
-06_Preprocessing_and_Model_training.ipynb
-        ↓
-07_Churn_EDA.ipynb
+   -> 02_restaurants_eda.ipynb
+   -> 03_restaurants_feature_engineering.ipynb
+   -> 04_Synthetic_Customer_Generation.ipynb
+   -> 05_order_simulation.ipynb
+   -> 06_Preprocessing_and_Model_training.ipynb
+   -> 07_Churn_EDA.ipynb
 ```
 
-Each stage builds on the output of the previous stage.
-
-The exact implementation, distributions, parameters, and feature calculations can be inspected directly in the corresponding notebooks.
+Each stage builds on the output of the one before it. The exact implementation, distributions, parameters, and feature calculations can be inspected directly in the corresponding notebook.
 
 ---
 
-# 27. Summary of Key Decisions
+# 28. Summary of Key Decisions
 
-| Problem                     | Decision                            | Reason                                                      |
-| --------------------------- | ----------------------------------- | ----------------------------------------------------------- |
-| No customer-level dataset   | Synthetic customer/order generation | Allows complete end-to-end problem construction             |
-| Restaurant ratings          | Bayesian-adjusted rating            | Accounts for rating confidence                              |
-| Highly skewed review counts | `log(1 + votes)`                    | Reduces influence of extreme values                         |
-| Restaurant selection        | Customer-specific Appeal Score      | Models individual preferences rather than global popularity |
-| Order frequency             | Poisson-based simulation            | Appropriate for event counts                                |
-| Spending                    | Gamma-based simulation              | Positive and right-skewed                                   |
-| Churn generation            | Time-based mechanism                | Avoids order-frequency bias                                 |
-| Feature window              | 90-day observation                  | Prevents future-information leakage                         |
-| Prediction window           | Following 90 days                   | Defines a future churn outcome                              |
-| Model                       | XGBoost                             | Captures nonlinear behavioral relationships                 |
-| Interpretation              | SHAP                                | Explains model behavior                                     |
+| Problem | Decision | Reason |
+|---|---|---|
+| No customer-level dataset | Synthetic customer/order generation | Allows a complete end-to-end problem, not just a modeling exercise |
+| Restaurant ratings | Bayesian-adjusted rating | Accounts for how much evidence backs a rating |
+| Highly skewed review counts | `log(1 + votes)` | Reduces the influence of extreme values |
+| Restaurant selection | Customer-specific Appeal Score | Models individual preference, not global popularity |
+| Order frequency | Poisson-based simulation | Appropriate for event counts |
+| Spending | Gamma-based simulation | Positive and right-skewed |
+| Churn generation | Time-based mechanism | Avoids order-frequency bias in the label itself |
+| Feature window | 90-day observation | Prevents future-information leakage |
+| Prediction window | Following 90 days | Defines a genuine future outcome |
+| Model | XGBoost | Captures nonlinear behavioral relationships |
+| Interpretation | SHAP | Explains individual and global model behavior |
 
 ---
 
-# 28. Final Perspective
+# 29. Final Perspective
 
-The central lesson from this project was that **the model is only one part of a data science problem**.
+The central lesson here was that the model is only one part of a data science problem. When you're working with synthetic data, the assumptions used to generate it can end up determining what the model eventually learns, and a few places in this project (the churn mechanism, `mean_order_gap`) made that very literal.
 
-When working with synthetic data, the assumptions used to generate the data can determine what the model eventually learns.
-
-The most valuable part of the project was therefore not achieving a particular AUC.
-
-It was the iterative process of:
-
-**making assumptions → generating data → checking the resulting behavior → identifying flaws → changing the methodology → modeling → interpreting the results.**
-
-With real customer data, the next challenge would be determining which of these simulated relationships actually survive in the real world.
+The most valuable part of the project wasn't hitting a particular AUC. It was the loop of making assumptions, generating data, checking what came out of it, finding something that didn't add up, tracing it back to its cause, and only then trusting the number. With real customer data, the next challenge would be figuring out which of these simulated relationships actually survive contact with the real world.
