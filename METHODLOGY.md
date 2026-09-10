@@ -307,7 +307,7 @@ Multiple metrics were used since churn prediction isn't well described by accura
 
 <table>
 <tr>
-<td><img src="https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/confusion_matrix_baseline_model.png" alt="Baseline confusion matrix" width="400"/></td>
+<td><img src="https://github.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/blob/main/Images/confusionmatrix_baseline.png" alt="Baseline confusion matrix" width="400"/></td>
 <td><img src="https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/confusionmatrix.png" alt="Tuned confusion matrix" width="400"/></td>
 </tr>
 </table>
@@ -365,7 +365,7 @@ This pattern holds at the population level too, not just within this one quintil
 
 ![Order trajectory by churn status](https://raw.githubusercontent.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/main/Images/order_trajectory.png)
 
-<!-- PASTE IMAGE LINK HERE: cropped mean_order_gap panel from churn_numerical.png, bottom-right box plot -->
+![Churn by price tier](https://github.com/PrikshitSingh230/FoodFirst-Customer-Churn-Prediction/blob/main/Images/churn_retained_by_mean_order_gap.png)
 
 Practically, this means `mean_order_gap` on its own is a misleading feature. A trend-based feature, something like the ratio of `orders_last_30d` to `orders_first_30d`, or a slope across the three 30-day buckets, would capture the actual decline pattern that the flat average currently hides. Those raw ingredients (`orders_first_30d`, `orders_middle_30d`, `orders_last_30d`) already exist in the feature table; the trend feature itself just hasn't been built yet.
 
